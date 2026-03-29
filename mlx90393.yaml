@@ -1,0 +1,22 @@
+---
+substitutions:
+  axis_x_key: 'x_axis'
+  axis_y_key: 'y_axis'
+  axis_z_key: 'z_axis'
+logger:
+  logs:
+    mlx90393: INFO
+number:
+  - id: !remove ${prefix_id}temperature_offset
+sensor:
+  - id: !extend ${prefix_id}qmc5883l_id
+    platform: mlx90393
+    oversampling: 1
+    filter: 5
+    temperature: !remove ${prefix_id}qmc5883l_temperature
+    x_axis:
+      resolution: DIV_8
+    y_axis:
+      resolution: DIV_8
+    z_axis:
+      resolution: DIV_8

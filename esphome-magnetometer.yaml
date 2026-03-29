@@ -33,6 +33,11 @@ substitutions:
   hide_magnetic_field_strength_sensors: 'true'
   hide_half_rotations_total_sensor: 'true'
 
+  # Override these to change the axis key names (e.g. for MLX90393: x_axis, y_axis, z_axis)
+  axis_x_key: 'field_strength_x'
+  axis_y_key: 'field_strength_y'
+  axis_z_key: 'field_strength_z'
+
   # Tuning parameters for the Min/Max Tracker algorithm:
   # Decay rate per tick (~5ms). Controls how fast the tracker follows thermal drift.
   # 0.0005 = ~6 µT/min. Increase if you see false triggers from temperature changes.
@@ -446,7 +451,7 @@ sensor:
     id: ${prefix_id}qmc5883l_id
     i2c_id: ${prefix_id}i2c_bus
     address: 0x0D
-    field_strength_x:
+    ${axis_x_key}:
       id: ${prefix_id}qmc5883l_axis_x
       name: ${prefix_name}Magnetic Field Strength X
       internal: ${hide_magnetic_field_strength_sensors}
@@ -461,7 +466,7 @@ sensor:
               }
       filters:
         - delta: ${magnetic_field_update_delta}
-    field_strength_y:
+    ${axis_y_key}:
       id: ${prefix_id}qmc5883l_axis_y
       name: ${prefix_name}Magnetic Field Strength Y
       internal: ${hide_magnetic_field_strength_sensors}
@@ -476,7 +481,7 @@ sensor:
               }
       filters:
         - delta: ${magnetic_field_update_delta}
-    field_strength_z:
+    ${axis_z_key}:
       id: ${prefix_id}qmc5883l_axis_z
       name: ${prefix_name}Magnetic Field Strength Z
       internal: ${hide_magnetic_field_strength_sensors}
