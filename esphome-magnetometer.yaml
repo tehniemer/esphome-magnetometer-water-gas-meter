@@ -84,19 +84,27 @@ api:
       variables:
         new_total: float
       then:
+        # Anchor the offset so Total lands on new_total, leaving the counter alone.
+        # The counter stays a true half-rotation count, so adjusting
+        # volume_per_half_rotation afterwards revalues only the volume actually
+        # measured, not the reading this anchored to.
         - globals.set:
-            id: ${prefix_id}half_rotations_total
+            id: ${prefix_id}volume_offset
             value: !lambda |-
               float volume = id(${prefix_id}volume_per_half_rotation).state;
-              if (std::isnan(volume) || volume <= 0) {
-                ESP_LOGW("${prefix_id}set_total", "Volume per half rotation is %f, ignoring set_total", volume);
-                return id(${prefix_id}half_rotations_total);
+              if (std::isnan(volume)) {
+                ESP_LOGW("${prefix_id}set_total", "Volume per half rotation is NaN, ignoring set_total");
+                return id(${prefix_id}volume_offset);
               }
-              return new_total / volume;
+              return new_total - id(${prefix_id}half_rotations_total) * volume;
 
 globals:
   - id: ${prefix_id}half_rotations_total
     type: long
+    restore_value: true
+    initial_value: '0'
+  - id: ${prefix_id}volume_offset
+    type: float
     restore_value: true
     initial_value: '0'
   - id: ${prefix_id}half_rotations_flow
@@ -569,7 +577,9 @@ sensor:
   - platform: template
     id: ${prefix_id}sensor_total
     name: ${prefix_name}Total
-    lambda: return id(${prefix_id}half_rotations_total) * id(${prefix_id}volume_per_half_rotation).state;
+    lambda: |-
+      return id(${prefix_id}half_rotations_total) * id(${prefix_id}volume_per_half_rotation).state
+             + id(${prefix_id}volume_offset);
     update_interval: 10s
     accuracy_decimals: 2
     device_class: ${device_class}

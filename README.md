@@ -305,6 +305,10 @@ If you would like your "Total" reading to match the reading displayed on your ph
 3. Enter the desired total volume you wish your device to report in the `new_total` field.
 4. Click **Perform Action**.
 
+This stores an offset rather than rewriting the half-rotation counter, so the counter
+keeps running uninterrupted and a later change to `volume_per_half_rotation` only
+rescales the volume that was actually counted.
+
 ### Temperature
 
 Only supported if you are using a QMC5883L.
