@@ -263,7 +263,16 @@ Algorithm | Best For
 
 1. Run a light stream of water/gas.
 2. Press the "**Calibrate axis**" button in Home Assistant.
-3. Wait for calibration to complete (default 5 seconds, configurable).
+3. Wait for calibration to complete (default 5 seconds for water, 180 for gas, configurable).
+
+Calibration has to span at least one full rotation of the magnet, or the recorded
+min/max is only a fragment of the real swing and the detection window comes out too
+narrow. Water meters rotate in seconds; a slow gas index can take ~140 seconds per
+rotation at low flow, which is why the gas package defaults to 180.
+
+> **Upgrading:** the "Calibration time" number uses `restore_value: true`, so a device
+> that already stored a value keeps it after flashing. Existing gas meters will still be
+> on 5 seconds — change it in Home Assistant, then recalibrate.
 
 The system will automatically:
 
@@ -293,7 +302,24 @@ Alternatively:
 5. Set `hide_half_rotations_total_sensor: 'true'`.
 
 For water meters this defaults to `0.01008156 gal` which is for my 3/4" Badge Meter Model 35.
-For gas meters this defaults to `0.125 ft³` which seems to be the most common in US.
+For gas meters this defaults to `0.125 ft³`, which is common where the magnet couples to
+the bellows/diaphragm drive. Do not assume it: on many AMR/ERT-equipped meters (e.g.
+Aclara STAR) the magnet sits on the index drive shaft instead, where one rotation equals
+the meter's drive rate — commonly 1.0 or 2.0 ft³, up to 16x the default.
+
+You can read the drive rate off the small proving/test dials on the index:
+
+Proving dials | Drive rate | Volume per full rotation
+--- | --- | ---
+"1 FT" and "1/4 FT" | 1-foot drive | 1.0 ft³
+"2 FT" and "1/2 FT" | 2-foot drive | 2.0 ft³
+
+Those are volumes per full rotation, but this setting is per half rotation. How many
+counts one rotation produces depends on the magnet, so do not assume a factor of two.
+Measure it: set `hide_half_rotations_total_sensor: 'false'`, watch "Half rotations
+total" across one full revolution of the smallest proving dial under steady flow, and
+divide the drive rate by the number of counts it advanced.
+
 If you have modified the `volume_unit` you have to manually convert this value.
 
 ### Setting Total Volume

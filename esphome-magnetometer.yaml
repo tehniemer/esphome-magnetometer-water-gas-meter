@@ -32,6 +32,9 @@ substitutions:
 
   volume_per_half_rotation_initial_value: '0.01008156'
   calibration_minimal_axis_range_initial_value: '20'
+  # How often Flow is recomputed and published. Under flow_algorithm 'interval' this
+  # is only the publish cadence; under 'window' it is also the averaging window, and
+  # therefore sets the smallest non-zero reading (volume_per_half_rotation * 60 / this).
   flow_update_interval_seconds: '10'
 
   # Only publish updates if the magnetic field changes by at least this amount (in µT).
@@ -61,6 +64,22 @@ substitutions:
   # the opposite tracker is dragged along to maintain the maximum allowed size.
   # 1.2 = Max allowed window is 120% of calibrated size.
   max_span_multiplier: '1.2'
+
+  # Flow estimator. 'interval' derives the rate from the median time between recent
+  # half rotations, so the resolution does not depend on the flow rate. 'window'
+  # counts half rotations per update interval instead: it cannot express a rate below
+  # one count per window, but it does read zero within one window of the last pulse.
+  flow_algorithm: 'interval'
+  # Silence before Flow reads zero, as bounds on 2.5x the median interval. The floor
+  # keeps a sharp deceleration from being read as a stop; the ceiling bounds how long
+  # Flow stays non-zero after the meter really stops.
+  min_silence_seconds: '15'
+  max_silence_seconds: '60'
+  # A water leak runs ~0.0003 gal/min, so Flow needs more digits than volume does.
+  flow_accuracy_decimals: '4'
+  # Calibration must span at least one full magnet rotation. Water meters rotate in
+  # seconds; a gas index can take minutes, so the gas package raises this.
+  calibration_seconds_initial_value: '5'
 
 esphome:
   min_version: "2026.1.0"
@@ -109,6 +128,25 @@ globals:
     initial_value: '0'
   - id: ${prefix_id}half_rotations_flow
     type: long
+    restore_value: false
+    initial_value: '0'
+
+  # Pulse timing for the 'interval' flow estimator.
+  # iv0/iv1/iv2 are the three most recent half-rotation intervals in ms, newest first.
+  - id: ${prefix_id}last_pulse_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: ${prefix_id}iv0
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: ${prefix_id}iv1
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: ${prefix_id}iv2
+    type: uint32_t
     restore_value: false
     initial_value: '0'
   - id: ${prefix_id}axis_value_high
@@ -250,7 +288,7 @@ number:
     min_value: 1
     max_value: 999
     step: 1
-    initial_value: 5
+    initial_value: ${calibration_seconds_initial_value}
     update_interval: never
     restore_value: true
     optimistic: true
@@ -453,6 +491,30 @@ sensor:
                 id(${prefix_id}axis_value_high) = true;
                 id(${prefix_id}half_rotations_total) += 1;
                 id(${prefix_id}half_rotations_flow) += 1;
+                {
+                  // Record the interval for the flow estimator. The total counter above is
+                  // never gated on this: a rejected bounce must not lose volume.
+                  uint32_t now_ms = millis();
+                  if (id(${prefix_id}last_pulse_ms) != 0) {
+                    uint32_t dt = now_ms - id(${prefix_id}last_pulse_ms);
+                    if (dt >= 10) {  // rejects threshold chatter, still allows ~60 gal/min
+                      if (dt > ${max_silence_seconds} * 1000UL) {
+                        // Flow was already reported as stopped, so the older intervals are no
+                        // longer evidence about the current rate. Keep this gap as the only
+                        // sample rather than dropping it: for a slow leak the gap IS the
+                        // interval, and discarding it would pin Flow at zero forever.
+                        id(${prefix_id}iv1) = 0;
+                        id(${prefix_id}iv2) = 0;
+                        id(${prefix_id}iv0) = dt;
+                      } else {
+                        id(${prefix_id}iv2) = id(${prefix_id}iv1);
+                        id(${prefix_id}iv1) = id(${prefix_id}iv0);
+                        id(${prefix_id}iv0) = dt;
+                      }
+                    }
+                  }
+                  id(${prefix_id}last_pulse_ms) = now_ms;
+                }
                 id(led).turn_on();
               } else if (x < (midpoint - hyst) && id(${prefix_id}axis_value_high)) {
                 id(${prefix_id}axis_value_high) = false;
@@ -465,6 +527,30 @@ sensor:
               id(${prefix_id}axis_value_high) = true;
               id(${prefix_id}half_rotations_total) += 1;
               id(${prefix_id}half_rotations_flow) += 1;
+              {
+                // Record the interval for the flow estimator. The total counter above is
+                // never gated on this: a rejected bounce must not lose volume.
+                uint32_t now_ms = millis();
+                if (id(${prefix_id}last_pulse_ms) != 0) {
+                  uint32_t dt = now_ms - id(${prefix_id}last_pulse_ms);
+                  if (dt >= 10) {  // rejects threshold chatter, still allows ~60 gal/min
+                    if (dt > ${max_silence_seconds} * 1000UL) {
+                      // Flow was already reported as stopped, so the older intervals are no
+                      // longer evidence about the current rate. Keep this gap as the only
+                      // sample rather than dropping it: for a slow leak the gap IS the
+                      // interval, and discarding it would pin Flow at zero forever.
+                      id(${prefix_id}iv1) = 0;
+                      id(${prefix_id}iv2) = 0;
+                      id(${prefix_id}iv0) = dt;
+                    } else {
+                      id(${prefix_id}iv2) = id(${prefix_id}iv1);
+                      id(${prefix_id}iv1) = id(${prefix_id}iv0);
+                      id(${prefix_id}iv0) = dt;
+                    }
+                  }
+                }
+                id(${prefix_id}last_pulse_ms) = now_ms;
+              }
               id(led).turn_on();
             } else if (x < id(${prefix_id}threshold_lower).state && id(${prefix_id}axis_value_high)) {
               id(${prefix_id}axis_value_high) = false;
@@ -597,11 +683,67 @@ sensor:
     device_class: volume_flow_rate
     icon: mdi:speedometer
     lambda: |-
-      float flow = id(${prefix_id}half_rotations_flow) * id(${prefix_id}volume_per_half_rotation).state * 60.0 / ${flow_update_interval_seconds};
+      const float vol = id(${prefix_id}volume_per_half_rotation).state;
+
+      if (std::string("${flow_algorithm}") == "interval") {
+        id(${prefix_id}half_rotations_flow) = 0;  // only the window branch consumes it
+        // Rate from the median time between half rotations. Counting pulses in a fixed
+        // window cannot express a rate below one count per window, and on a coarse gas
+        // index, where one count can be worth a couple of ft3, that floor sits above
+        // the steady draw of every residential appliance.
+        if (id(${prefix_id}last_pulse_ms) == 0 || id(${prefix_id}iv0) == 0) return 0.0f;
+
+        // Median of up to 3 intervals. A spurious edge splits one real interval into a
+        // very short and a near-normal one, and the median discards the short one. It
+        // also treats the long gap after an idle period as an outlier, so the first
+        // pulse of a new session does not drag the rate down. Written without min/max
+        // because Arduino cores define those as function-like macros.
+        uint32_t floor_ms = ${min_silence_seconds} * 1000UL;
+        uint32_t ceil_ms = ${max_silence_seconds} * 1000UL;
+
+        uint32_t a = id(${prefix_id}iv0), b = id(${prefix_id}iv1), c = id(${prefix_id}iv2);
+        uint32_t med;
+        if (b == 0) {
+          med = a;
+        } else if (c == 0) {
+          // An interval longer than ceil_ms can only be a session-start gap (any such
+          // gap resets the buffer above), never a real in-session interval. Averaging
+          // it in would drag the first minutes of a new burn/draw down to near zero,
+          // so with only two samples the older one is dropped rather than averaged.
+          med = (b > ceil_ms) ? a : (a + b) / 2;
+        } else {
+          uint32_t lo = (a < b) ? a : b;
+          uint32_t hi = (a < b) ? b : a;
+          med = (c < lo) ? lo : ((c > hi) ? hi : c);
+        }
+
+        // Silence allowed before Flow reads zero. The floor stops a sharp deceleration
+        // (shower throttled to a trickle) being mistaken for a stop; the ceiling bounds
+        // how long Flow lingers so automations keyed on zero still fire.
+        uint32_t timeout = (uint32_t)(2.5f * med);
+        if (timeout < floor_ms) timeout = floor_ms;
+        if (timeout > ceil_ms) timeout = ceil_ms;
+
+        // Display decision only: report zero when silent, but never clear the interval
+        // buffer. Intervals longer than the timeout are still measured, so a slow leak
+        // keeps reporting its real rate instead of being stuck at zero forever.
+        uint32_t elapsed = millis() - id(${prefix_id}last_pulse_ms);
+        if (elapsed > timeout) return 0.0f;
+
+        // While silent, the true rate cannot exceed one pulse per elapsed time, so the
+        // reading decays along that bound instead of holding a stale higher value.
+        float rate = vol * 60000.0f / med;
+        float bound = vol * 60000.0f / (elapsed > 0 ? elapsed : 1);
+        return (rate < bound) ? rate : bound;
+      }
+
+      // Half rotations counted since the last publish, scaled to a rate. The smallest
+      // non-zero value it can report is one count per update interval.
+      float flow = id(${prefix_id}half_rotations_flow) * vol * 60.0f / ${flow_update_interval_seconds};
       id(${prefix_id}half_rotations_flow) = 0;
       return flow;
     update_interval: ${flow_update_interval_seconds}s
-    accuracy_decimals: 2
+    accuracy_decimals: ${flow_accuracy_decimals}
     state_class: measurement
     unit_of_measurement: ${volume_unit}/min
     filters:
