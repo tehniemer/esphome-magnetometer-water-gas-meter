@@ -288,10 +288,28 @@ If calibration fails, check the device logs. You might need to lower "Calibratio
 
 This depends on your specific water/gas meter model and its size.
 
-You can search for specifications of your specific water/gas meter and its size.
+You can search for specifications of your specific water/gas meter and its size. Specs are
+usually published as pulses per unit volume, from which `volume_per_half_rotation = 2 / pulses`.
+That factor of two is empirical, matching three meters so far, so confirm it with a measured
+container before trusting it.
+
+For the Badger Recordall Disc Series, from "Table 3: Transmitter pulses per unit" in the
+[Badger ER-10 manual](https://www.instrumart.com/assets/badger-er10_manual.pdf):
+
+Model | Size | Pulses per gal | Pulses per ft³ | Pulses per L | `volume_per_half_rotation`
+--- | --- | --- | --- | --- | ---
+25 RCDL | 5/8" | 198.340 | 1484.689 | 52.396 | `0.01008369` gal
+35 RCDL | 3/4" | 126.671 | 947.566 | 33.463 | `0.01578893` gal
+55 RCDL | 1" | 58.064 | 434.351 | 15.339 | `0.03444475` gal
+70 RCDL | 1" | 46.752 | 349.726 | 12.350 | `0.04277892` gal
+170 RCDL | 2" | 14.565 | 108.955 | 3.848 | `0.13731548` gal
+
+The 55 and 70 are both 1", so pick the row by the size stamped on the meter, not by the model.
+For another `volume_unit` divide 2 by the matching column: a 35 RCDL in ft³ is `2 / 947.566`.
 
 If you have the Flume water sensor you can use its lowest reported value. You can find it with:
 `select min(min) from statistics_short_term, statistics_meta where statistics_meta.statistic_id = 'sensor.water_usage_current' and statistics_meta.id = metadata_id and min > 0;`
+Flume assigns the meter model from the photo you send at setup, so verify it against your meter.
 
 Alternatively:
 
@@ -301,7 +319,7 @@ Alternatively:
 4. Set this to the result of: diff of readings in volume_unit divided by diff of half rotations.
 5. Set `hide_half_rotations_total_sensor: 'true'`.
 
-For water meters this defaults to `0.01008156 gal` which is for my 3/4" Badge Meter Model 35.
+For water meters this defaults to `0.01578893 gal` which is for my 3/4" Badger Meter Model 35.
 For gas meters this defaults to `0.125 ft³`, which is common where the magnet couples to
 the bellows/diaphragm drive. Do not assume it: on many AMR/ERT-equipped meters (e.g.
 Aclara STAR) the magnet sits on the index drive shaft instead, where one rotation equals
@@ -322,11 +340,15 @@ divide the drive rate by the number of counts it advanced.
 
 If you have modified the `volume_unit` you have to manually convert this value.
 
+> **Upgrading:** this number uses `restore_value: true`, so a device that already stored a
+> value keeps it after flashing. Change it in Home Assistant, then re-anchor Total with
+> [`set_total`](#setting-total-volume).
+
 ### Setting Total Volume
 
 If you would like your "Total" reading to match the reading displayed on your physical meter, you can use the `set_total` action.
 
-1. From Home Assistant, navigate to **Settings** > **Developer Tools** > **Actions**.
+1. From Home Assistant, navigate to **Settings** > **Tools** > **Actions**.
 2. Locate the `esphome.water_meter_set_total` action.
 3. Enter the desired total volume you wish your device to report in the `new_total` field.
 4. Click **Perform Action**.
@@ -334,6 +356,9 @@ If you would like your "Total" reading to match the reading displayed on your ph
 This stores an offset rather than rewriting the half-rotation counter, so the counter
 keeps running uninterrupted and a later change to `volume_per_half_rotation` only
 rescales the volume that was actually counted.
+
+Total is `total_increasing`, so raising it lands in your statistics as one huge hour of
+consumption. Correct it in **Settings** > **Tools** > **Statistics** > "Adjust a statistic".
 
 ### Temperature
 
@@ -344,111 +369,91 @@ Place another temperature sensor next to the QMC5883L and adjust the temperature
 
 > **Disclaimer:** The following are advanced examples. You will need to adapt the entity IDs and thresholds to match your own setup and usage patterns.
 
-### Leak Alert Automation
+### Water Running Too Long Alert
 
-In `Settings > Devices & services > Helpers` I have created a template sensor: `sensor.water_meter_flow_minus_irrigation` with the following state template: `{{ max(0, states('sensor.water_meter_flow') | float - (0.3 if now().hour in range(7, 10) else 0)) }}`. My irrigation system consumes 0.28 gal/min between 7 to 9 am or 8 to 10 am depending on DST. You will need to adjust this to your irrigation system flow and times. If you don't have irrigation you can skip this and use `sensor.water_meter_flow` below.
+In `Settings > Devices & services > Helpers` I have created a template sensor: `sensor.water_meter_flow_minus_irrigation` with the following state template: `{{ max(0, states('sensor.water_meter_flow') | float - (0.47 if now().hour in range(7, 10) else 0)) }}`. My irrigation system consumes 0.44 gal/min between 7 to 9 am or 8 to 10 am depending on DST. You will need to adjust this to your irrigation system flow and times. If you don't have irrigation you can skip this and use `sensor.water_meter_flow` below.
 
-In `Settings > Automations` I have created the following automation to get notified if water runs continuously for too long, which could indicate a leak. It has logic to allow for longer run times (like showers) if a bathroom light is on.
+I have also created a template **binary sensor**, `binary_sensor.water_meter_running_minus_irrigation`, with the state template `{{ states('sensor.water_meter_flow_minus_irrigation') | float(0) > 0 }}` and **no delay off**. The automation below reads its `last_changed` to know how long water has been running. Do not add a delay off unless you have measured your own usage: bridging the gaps between separate draws merges them into one long session and causes false alerts.
+
+In `Settings > Automations` I have created the following automation to get notified if water runs for longer than the flow rate justifies, which could indicate a burst pipe, a tap left running, or a toilet that will not stop filling. It allows longer run times when a bathroom light is on, since that is where long deliberate draws happen.
 
 ```yaml
 # This automation is provided as an example.
 # You MUST customize the following:
-# - entity_id: sensor.water_meter_flow_minus_irrigation (or your main flow sensor)
-# - The thresholds for flow rate (e.g., above: 1.7)
-# - The durations for each trigger (e.g., for: minutes: 3)
-# - The condition for exceptions (e.g., is_state('light.bathroom_upstairs_lights', 'off'))
-# - The notification service (e.g., notify.all, notify.nikos_mobile)
+# - The flow sensor and its matching "running" binary sensor
+# - The flow thresholds (2.5 and 1.5 below) and the durations
+# - The exception condition (e.g. is_state('light.bathroom_upstairs_lights', 'on'))
+# - The notification services
 
 alias: "Notify: water meter flow"
-description: "Sends critical alerts if water is running for an extended period."
+description: Alerts if water runs for longer than the flow rate justifies.
 triggers:
-  - trigger: numeric_state
-    id: high_flow
-    entity_id: sensor.water_meter_flow_minus_irrigation
-    above: 1.7
-    for:
-      minutes: 3
-  - trigger: numeric_state
-    id: high_flow_bath_lights_on
-    entity_id: sensor.water_meter_flow_minus_irrigation
-    above: 1.7
-    for:
-      minutes: 8
-  - trigger: numeric_state
-    id: medium_flow
-    entity_id: sensor.water_meter_flow_minus_irrigation
-    above: 1
-    for:
-      minutes: 5
-  - trigger: numeric_state
-    id: medium_flow_bath_lights_on
-    entity_id: sensor.water_meter_flow_minus_irrigation
-    above: 1
-    for:
-      minutes: 10
-  - trigger: numeric_state
-    id: low_flow
-    entity_id: sensor.water_meter_flow_minus_irrigation
-    above: 0
-    for:
-      minutes: 15
-  - trigger: numeric_state
-    id: low_flow_bath_lights_on
-    entity_id: sensor.water_meter_flow_minus_irrigation
-    above: 0
-    for:
-      minutes: 20
+  # High flow: a burst pipe or a wide-open tap. Least patience.
+  - trigger: template
+    value_template: >-
+      {% set flow = states('sensor.water_meter_flow_minus_irrigation') | float(0) %}
+      {% set lights = is_state('light.bathroom_upstairs_lights', 'on') %}
+      {% set r = states.binary_sensor.water_meter_running_minus_irrigation %}
+      {% set elapsed = ((as_timestamp(now()) - as_timestamp(r.last_changed)) / 60)
+                       if (r is not none and r.state == 'on') else 0 %}
+      {{ flow > 2.5 and ((not lights and elapsed >= 3) or (lights and elapsed >= 8)) }}
+  # Medium flow.
+  - trigger: template
+    value_template: >-
+      {% set flow = states('sensor.water_meter_flow_minus_irrigation') | float(0) %}
+      {% set lights = is_state('light.bathroom_upstairs_lights', 'on') %}
+      {% set r = states.binary_sensor.water_meter_running_minus_irrigation %}
+      {% set elapsed = ((as_timestamp(now()) - as_timestamp(r.last_changed)) / 60)
+                       if (r is not none and r.state == 'on') else 0 %}
+      {{ flow > 1.5 and flow <= 2.5 and ((not lights and elapsed >= 5) or (lights and elapsed >= 10)) }}
+  # Any flow at all, running far too long: a seeping toilet or a forgotten tap.
+  - trigger: template
+    value_template: >-
+      {% set flow = states('sensor.water_meter_flow_minus_irrigation') | float(0) %}
+      {% set lights = is_state('light.bathroom_upstairs_lights', 'on') %}
+      {% set r = states.binary_sensor.water_meter_running_minus_irrigation %}
+      {% set elapsed = ((as_timestamp(now()) - as_timestamp(r.last_changed)) / 60)
+                       if (r is not none and r.state == 'on') else 0 %}
+      {{ flow > 0 and flow <= 1.5 and ((not lights and elapsed >= 15) or (lights and elapsed >= 20)) }}
+conditions: []
 actions:
   - variables:
-      initial_duration_seconds: "{{ trigger.for.total_seconds() }}"
-      alert_start_time: "{{ now() }}"
-  - if:
-      - condition: template
-        value_template: >-
-          {{ 'bath_lights_on' in trigger.id or
-          is_state('light.bathroom_upstairs_lights', 'off') }}
-    then:
-      - repeat:
-          until:
-            - condition: numeric_state
-              entity_id: sensor.water_meter_flow_minus_irrigation
-              below: 0.001
-          sequence:
-            - action: notify.all
-              data:
-                title: "💧 Alert: Water Flow"
-                message: >-
-                  {% set time_since_alert_started = now() -
-                  as_datetime(alert_start_time) %}
-
-                  {% set total_duration_seconds = initial_duration_seconds +
-                  time_since_alert_started.total_seconds() %}
-
-                  Water flow is {{ states('sensor.water_meter_flow') | round(1)
-                  }} gallons per minute.
-
-                  Water has now been running for {{ (total_duration_seconds /
-                  60) | round(0) }} minutes.
-                data:
-                  tag: water-flow-alert
-                  push:
-                    sound:
-                      name: default
-                      critical: 1
-                      volume: 1
-                  ttl: 0
-                  priority: high
-                  media_stream: alarm_stream_max
-            - action: notify.nikos_mobile
-              data:
-                message: TTS
-                data:
-                  ttl: 0
-                  priority: high
-                  media_stream: alarm_stream_max
-                  tts_text: Water flow alert
-            - delay:
-                seconds: 30
+      start_ts: >-
+        {{ as_timestamp(states.binary_sensor.water_meter_running_minus_irrigation.last_changed) }}
+  - repeat:
+      until:
+        - condition: numeric_state
+          entity_id: sensor.water_meter_flow_minus_irrigation
+          below: 0.0016
+      sequence:
+        - action: notify.all
+          data:
+            title: "💧 Alert: Water Flow"
+            message: >-
+              {% set total = as_timestamp(now()) - start_ts %}
+              Water flow is {{ states('sensor.water_meter_flow') | round(1) }} gallons per minute.
+              Water has now been running for {{ (total / 60) | round(0) }} minutes.
+            data:
+              tag: water-flow-alert
+              push:
+                sound:
+                  name: default
+                  critical: 1
+                  volume: 1
+              ttl: 0
+              priority: high
+              media_stream: alarm_stream_max
+        - action: notify.nikos_mobile
+          data:
+            message: TTS
+            data:
+              ttl: 0
+              priority: high
+              media_stream: alarm_stream_max
+              tts_text: Water flow alert
+        - delay:
+            seconds: 30
+mode: single
 ```
 
 The group notifiers are defined in `/homeassistant/configuration.yaml`:
@@ -479,7 +484,7 @@ notify:
       - service: alexa_media_garage_ecobee_switch
 ```
 
-To find what thresholds and durations to use for your own water usage patterns, run this SQL query in the **SQLite Web** add-on with different `flow_threshold`:
+To find what thresholds and durations to use for your own water usage patterns, run this SQL query in the **SQLite Web** add-on with different `flow_threshold`. Start at `0`: the binary sensor turns on at any flow, so that gives the session lengths the automation's `elapsed` actually measures. Then raise it to see which flow rates your household sustains, and for how long:
 
 ```sql
 -- This query calculates the longest continuous period the water meter was running each day,
@@ -491,7 +496,7 @@ WITH variables AS (
   -- All user-adjustable parameters are defined here for easy modification.
   SELECT
     1.5 AS flow_threshold,          -- The flow rate (e.g., in GPM or L/min) above which the water is considered "running".
-    0.3 AS irrigation_flow_reduction, -- The value to subtract from the flow rate during the irrigation window.
+    0.47 AS irrigation_flow_reduction, -- The value to subtract from the flow rate during the irrigation window.
     '07:00' AS irrigation_start_time,  -- The start time of the daily irrigation window (HH:MM).
     '10:00' AS irrigation_end_time    -- The end time of the daily irrigation window (HH:MM).
 ),
@@ -590,7 +595,7 @@ ORDER BY run_day DESC;
 
 ### Slow Leak Detection Automation
 
-This automation runs every 30 minutes and checks if there was any water usage in the last hour without the flow rate ever exceeding a low threshold (e.g., 0.1 gal/min). This is useful for detecting very slow leaks that don't trigger a continuous flow alert but still consume water over time.
+This automation runs every 30 minutes and checks whether a small volume arrived spread across most of the last hour, which is what separates a leak from normal use: a drip touches nearly every 5-minute period, briefly running a sink touches one.
 
 ```yaml
 alias: "Notify: Slow Water Leak"
@@ -602,30 +607,25 @@ actions:
   - action: sql.query
     data:
       query: |-
-        SELECT 
-          (
-            SELECT MAX("sum") - MIN("sum")
+        WITH b AS (
+          SELECT s."sum" - LAG(s."sum") OVER (ORDER BY s.start_ts) AS d
             FROM statistics_short_term s
             JOIN statistics_meta m ON s.metadata_id = m.id
-            WHERE m.statistic_id = 'sensor.water_meter_total'
-            AND s.start_ts >= strftime('%s', 'now') - 3600
-          ) AS volume_delta,
-          (
-            SELECT MAX("max")
-            FROM statistics_short_term s
-            JOIN statistics_meta m ON s.metadata_id = m.id
-            WHERE m.statistic_id = 'sensor.water_meter_flow'
-            AND s.start_ts >= strftime('%s', 'now') - 3600
-          ) AS max_flow_rate
+           WHERE m.statistic_id = 'sensor.water_meter_total'
+             AND s.start_ts >= strftime('%s', 'now') - 4500
+             AND s.start_ts <  strftime('%s', 'now') -  600
+        )
+        SELECT (SELECT SUM(d) FROM b) AS volume_delta,
+               (SELECT COUNT(*) FROM b WHERE d > 0) AS active_periods
     response_variable: sql_result
   - if:
       - condition: template
         value_template: |-
           {% set row = sql_result['result'][0] %}
-          {{ 
-             row['volume_delta'] is not none and 
-             row['volume_delta'] > 0.015 and 
-             (row['max_flow_rate'] is none or row['max_flow_rate'] < 0.1)
+          {{
+             row['volume_delta'] is not none and
+             0 < row['volume_delta'] < 1.0 and
+             row['active_periods'] >= 8
           }}
     then:
       - action: notify.nikos
@@ -633,13 +633,17 @@ actions:
           title: 💧 Slow Leak Detected
           message: >-
             {% set row = sql_result['result'][0] %} Usage in last hour: {{
-            row['volume_delta'] | round(3) }} gal. Max Flow Rate observed: {{
-            row['max_flow_rate'] | round(3) }} gal/min.
+            row['volume_delta'] | round(3) }} gal, spread across {{
+            row['active_periods'] }} of 12 five-minute periods.
 
             This indicates a leak of approx {{ (row['volume_delta'] / 60) |
             round(4) }} gal/min.
 mode: single
 ```
+
+- The window ends 10 minutes ago because the current 5-minute statistics period isn't compiled yet; without that the automation fires twice with identical numbers.
+- The upper volume bound keeps an hour of irrigation from lighting up every period.
+- The smallest leak this can find is about 8 counts an hour, so it scales with `volume_per_half_rotation` — roughly 3 gal/day on a 35 RCDL.
 
 ### Daily Usage Alert
 
@@ -662,7 +666,7 @@ actions:
   - if:
       - condition: numeric_state
         entity_id: sensor.water_meter_daily_total
-        above: 150 # Adjust this to your typical high usage
+        above: 200 # Adjust this to your typical high usage
     then:
       - action: notify.nikos # Change to your notification service
         data:
@@ -696,3 +700,5 @@ mode: single
   - Recalibrate! Flow rate and totals depend entirely on correct calibration.
   - Ensure the sensor is mounted securely and hasn't shifted.
   - For high flow rates, an ESP8266 may not be able to keep up. Consider upgrading to an ESP32.
+  - If everything is off by the same factor, it's [Volume per half rotation](#volume-per-half-rotation), not calibration. Calibration decides when a half rotation is counted; that setting decides what it's worth. Nothing in Home Assistant will reveal it, since every derived value scales together — compare against your meter reading.
+  - If it's only a few percent low and worse at high flow, you're losing counts. Don't compensate with `volume_per_half_rotation`: that would fix Total at your average flow while leaving Flow wrong everywhere.

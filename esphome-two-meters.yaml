@@ -31,7 +31,7 @@ substitutions:
 
   # Defaults below mirror esphome-water-meter.yaml (meter1) and
   # esphome-gas-meter.yaml (meter2). Adjust per meter as needed.
-  volume_per_half_rotation_initial_value1: '0.01008156'
+  volume_per_half_rotation_initial_value1: '0.01578893'
   volume_per_half_rotation_initial_value2: '0.125'
   calibration_minimal_axis_range_initial_value1: '20'
   calibration_minimal_axis_range_initial_value2: '15'

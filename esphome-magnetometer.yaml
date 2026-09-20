@@ -30,7 +30,10 @@ substitutions:
   qmc5883l_update_interval: '5ms'
   qmc5883l_oversampling: '64x'
 
-  volume_per_half_rotation_initial_value: '0.01008156'
+  # 3/4" Badger Recordall 35 RCDL: 2/126.671 pulses per gallon. This is only the author's
+  # meter; the value varies by make, model and size, so look yours up or measure it. See the
+  # README section on volume per half rotation.
+  volume_per_half_rotation_initial_value: '0.01578893'
   calibration_minimal_axis_range_initial_value: '20'
   # How often Flow is recomputed and published. Under flow_algorithm 'interval' this
   # is only the publish cadence; under 'window' it is also the averaging window, and
